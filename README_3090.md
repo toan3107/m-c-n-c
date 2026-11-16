@@ -13,6 +13,21 @@ between their settings and the settings actually implemented in this package.
 
 ## 1. Clone code once on the RTX 3090
 
+If neither `git` nor `winget` exists, run this in PowerShell first. It reuses an
+existing Git installation or installs official MinGit without administrator
+rights, verifies the pinned release SHA256, and adds Git to your user PATH:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+$installer = Join-Path $env:TEMP "reservoir8-install-git.ps1"
+Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/toan3107/m-c-n-c/main/install_git_user.ps1" -OutFile $installer
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+& $installer
+```
+
+MinGit release source: [Git for Windows 2.56.1](https://github.com/git-for-windows/git/releases/tag/v2.56.1.windows.1).
+The helper does not touch Python environments or dataset files.
+
 Choose the project directory in remote PowerShell. It may include spaces and
 Unicode characters; all scripts resolve paths from their own location:
 
