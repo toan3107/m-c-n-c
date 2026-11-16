@@ -1,0 +1,20 @@
+{
+  "status": "local_software_checks_passed_not_scientific_results",
+  "unit_tests_passed": 39,
+  "dataset_pairs": 214,
+  "external_dataset_hashes_verified": true,
+  "fz_tables_tracked_in_code": 8,
+  "temporal_windows_capped": {
+    "train": 79,
+    "val": 30,
+    "test": 34
+  },
+  "checkpoint_resume_and_native_prediction": "pass_on_tiny_fixture",
+  "local_cuda_smoke": "pass_on_RTX3050_128px_batch1_base16",
+  "powershell_syntax": "pass",
+  "remote_rtx3090_authenticated": false,
+  "remote_rtx3090_setup_completed": false,
+  "full_method_experiments_completed": false,
+  "final_test_evaluated": false,
+  "note": "Code and small F-Z tables are versioned; dataset and results remain outside Git. Run bootstrap/setup on the actual RTX 3090."
+}

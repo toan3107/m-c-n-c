@@ -1,0 +1,24 @@
+{
+  "samples": 214,
+  "input_channels": 3,
+  "counts_by_reservoir": {
+    "ankhe": 19,
+    "barrios_de_luna": 42,
+    "kanak": 18,
+    "lake_tschida": 37,
+    "lovewell": 22,
+    "thirlmere": 29,
+    "el_vado": 23,
+    "riano": 24
+  },
+  "split_counts": {
+    "train": 131,
+    "val": 36,
+    "test": 47
+  },
+  "dataset_subfolders": [
+    "images",
+    "masks"
+  ],
+  "preprocessing": "Already applied offline; original preprocessing code retained outside this review bundle"
+}

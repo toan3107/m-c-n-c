@@ -1,0 +1,152 @@
+{
+  "status": "pass",
+  "samples": 214,
+  "input_channels": 3,
+  "split_counts": {
+    "train": 131,
+    "val": 36,
+    "test": 47
+  },
+  "reservoir_counts": {
+    "ankhe": 19,
+    "barrios_de_luna": 42,
+    "el_vado": 23,
+    "kanak": 18,
+    "lake_tschida": 37,
+    "lovewell": 22,
+    "riano": 24,
+    "thirlmere": 29
+  },
+  "reservoir_splits": {
+    "ankhe": [
+      "train",
+      "val"
+    ],
+    "barrios_de_luna": [
+      "train",
+      "val"
+    ],
+    "el_vado": [
+      "test"
+    ],
+    "kanak": [
+      "train",
+      "val"
+    ],
+    "lake_tschida": [
+      "train",
+      "val"
+    ],
+    "lovewell": [
+      "train",
+      "val"
+    ],
+    "riano": [
+      "test"
+    ],
+    "thirlmere": [
+      "train",
+      "val"
+    ]
+  },
+  "native_dimensions": {
+    "ankhe": [
+      1401,
+      1001
+    ],
+    "barrios_de_luna": [
+      906,
+      885
+    ],
+    "el_vado": [
+      466,
+      956
+    ],
+    "kanak": [
+      1601,
+      1401
+    ],
+    "lake_tschida": [
+      1300,
+      535
+    ],
+    "lovewell": [
+      932,
+      461
+    ],
+    "riano": [
+      1342,
+      1217
+    ],
+    "thirlmere": [
+      302,
+      709
+    ]
+  },
+  "checksum_assets_verified": 436,
+  "forecast_windows": {
+    "train": 113,
+    "val": 36,
+    "test": 41
+  },
+  "max_horizon_days": 90.0,
+  "forecast_windows_capped": {
+    "train": 79,
+    "val": 30,
+    "test": 34
+  },
+  "horizon_days": {
+    "train": {
+      "min": 3.0,
+      "median": 40.0,
+      "max": 740.0
+    },
+    "val": {
+      "min": 5.0,
+      "median": 30.0,
+      "max": 260.0
+    },
+    "test": {
+      "min": 10.0,
+      "median": 38.0,
+      "max": 640.0
+    }
+  },
+  "fz_support": {
+    "ankhe": {
+      "inside_support": 19
+    },
+    "barrios_de_luna": {
+      "inside_support": 42
+    },
+    "el_vado": {
+      "inside_support": 23
+    },
+    "kanak": {
+      "inside_support": 18
+    },
+    "lake_tschida": {
+      "inside_support": 37
+    },
+    "lovewell": {
+      "inside_support": 22
+    },
+    "riano": {
+      "inside_support": 24
+    },
+    "thirlmere": {
+      "out_of_support": 7,
+      "inside_support": 22
+    }
+  },
+  "checks": {
+    "image_and_mask_hashes_match": true,
+    "native_grids_match": true,
+    "binary_nonempty_masks": true,
+    "test_reservoirs_disjoint": true,
+    "train_val_chronological_within_reservoir": true,
+    "training_context_excludes_validation": true,
+    "past_context_precedes_target": true,
+    "fz_extrapolation": false
+  }
+}
