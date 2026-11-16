@@ -102,7 +102,7 @@ def main() -> None:
                    "past_context_precedes_target": True, "fz_extrapolation": False},
     }
     output = args.output or manifest.parent / "dataset_audit.json"
-    output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    output.write_text(json.dumps(report, indent=2), encoding="utf-8", newline="\n")
     print(json.dumps(report, indent=2))
 
 

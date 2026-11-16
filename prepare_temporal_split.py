@@ -99,7 +99,7 @@ def main() -> None:
         "per_reservoir": details,
     }
     path = manifest.parent / "temporal_split.json"
-    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8", newline="\n")
     print(json.dumps(report, indent=2))
 
 
