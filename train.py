@@ -4,6 +4,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import random
 import time
@@ -28,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("runs/cfc_sdf_l01"))
     parser.add_argument("--train-splits", nargs="+", default=["train"])
     parser.add_argument("--val-split", default="val")
+    parser.add_argument("--no-validation", action="store_true", help="Fixed-budget refit; no validation or best-checkpoint selection")
     parser.add_argument("--test-split", default="test")
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--batch-size", type=int, default=2)
@@ -42,6 +44,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--lr-schedule", choices=["constant", "warmup_cosine"], default="constant")
+    parser.add_argument("--warmup-epochs", type=int, default=0)
+    parser.add_argument("--min-lr-ratio", type=float, default=0.01)
     parser.add_argument("--lambda-sdf", type=float, default=0.1)
     parser.add_argument("--sdf-truncation-fraction", type=float, default=0.05)
     parser.add_argument("--sdf-border-margin-fraction", type=float, default=0.01)
@@ -72,6 +77,23 @@ def seed_everything(seed: int) -> None:
 
 def masked_mean(values: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
     return (values * valid).sum() / valid.sum().clamp_min(1.0)
+
+
+def make_scheduler(optimizer: torch.optim.Optimizer, args: argparse.Namespace):
+    if args.lr_schedule == "constant":
+        return None
+    if not 0 <= args.warmup_epochs < args.epochs:
+        raise ValueError("Warmup must be nonnegative and shorter than the fixed training budget")
+    if not 0 < args.min_lr_ratio <= 1:
+        raise ValueError("min-lr-ratio must be in (0, 1]")
+
+    def multiplier(epoch: int) -> float:
+        if epoch < args.warmup_epochs:
+            return (epoch + 1) / args.warmup_epochs
+        progress = min(1., (epoch - args.warmup_epochs) / max(1, args.epochs - args.warmup_epochs - 1))
+        return args.min_lr_ratio + (1 - args.min_lr_ratio) * (1 + math.cos(math.pi * progress)) / 2
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, multiplier)
 
 
 def compute_loss(
@@ -282,12 +304,14 @@ def main() -> None:
         raise ValueError("--lambda-sdf cannot be negative")
     if args.image_size % 16 != 0:
         raise ValueError("--image-size must be divisible by 16")
-    if args.val_split in args.train_splits or args.test_split in args.train_splits:
+    if (not args.no_validation and args.val_split in args.train_splits) or args.test_split in args.train_splits:
         raise ValueError("Training, validation and final-test splits must remain separate")
     if args.val_split == args.test_split:
         raise ValueError("Validation cannot use the final-test split")
     if args.epochs < 1 or args.batch_size < 1:
         raise ValueError("Epochs and batch size must be positive")
+    if args.no_validation and args.evaluate_test:
+        raise ValueError("Refit and locked final-test evaluation must be separate commands")
 
     if args.device == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -309,11 +333,13 @@ def main() -> None:
     train_loader = make_loader(
         args.splits, set(args.train_splits), args, augment=True, shuffle=True
     )
-    val_loader = make_loader(
+    val_loader = None if args.no_validation else make_loader(
         args.splits, {args.val_split}, args, augment=False, shuffle=False
     )
 
     for name, loader in (("train", train_loader), ("val", val_loader)):
+        if loader is None:
+            continue
         with (output_dir / f"{name}_windows.csv").open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=["reservoir", "context_dates", "target_date", "horizon_days"])
             writer.writeheader()
@@ -324,15 +350,18 @@ def main() -> None:
                                  "horizon_days": window.horizon_days})
     model = build_model(config).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = make_scheduler(optimizer, args)
     scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda", init_scale=1024.)
     parameter_count = sum(parameter.numel() for parameter in model.parameters())
     config["parameters"] = parameter_count
     print(f"Model: {args.model}")
     print(f"Device: {device} | parameters: {parameter_count:,}")
     print(
-        f"Train: {len(train_loader.dataset)} | val: {len(val_loader.dataset)} | "
+        f"Train: {len(train_loader.dataset)} | val: {len(val_loader.dataset) if val_loader else 0} | "
         f"lambda_sdf: {args.lambda_sdf}"
     )
+    if args.no_validation:
+        print("Fixed-budget refit: all requested source splits train weights; checkpoint=last.pt; no early stopping.")
 
     history: list[dict[str, float | int]] = []
     best_iou, best_epoch, stale_epochs, start_epoch = -1.0, 0, 0, 1
@@ -340,11 +369,21 @@ def main() -> None:
         if args.resume.resolve().parent != output_dir:
             raise ValueError("Resume must use the same output directory as last.pt")
         checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
+        for key, default in (("no_validation", False), ("lr_schedule", "constant"),
+                             ("warmup_epochs", 0), ("min_lr_ratio", .01)):
+            if checkpoint["config"].get(key, default) != config[key]:
+                raise ValueError(f"Resume configuration differs: {key}")
+        if checkpoint["config"]["train_splits"] != config["train_splits"]:
+            raise ValueError("Resume training split differs")
+        if scheduler is not None and checkpoint["config"]["epochs"] != args.epochs:
+            raise ValueError("A scheduled run must resume with its original fixed epoch budget")
         for key in ("model", "manifest_sha256", "base_channels", "context_length", "image_size", "time_scale_days", "lambda_sdf", "max_horizon_days", "seed", "balance_reservoirs", "num_workers", "overfit_windows"):
             if checkpoint["config"][key] != config[key]:
                 raise ValueError(f"Resume configuration differs: {key}")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
+        if scheduler is not None:
+            scheduler.load_state_dict(checkpoint["scheduler"])
         scaler.load_state_dict(checkpoint["scaler"])
         history = checkpoint["history"]
         best_iou, best_epoch = checkpoint["best_iou"], checkpoint["best_epoch"]
@@ -362,14 +401,16 @@ def main() -> None:
         train_loss, train_metrics = run_epoch(
             model, train_loader, device, args.lambda_sdf, optimizer, scaler, smoke_test=True
         )
-        with torch.no_grad():
-            val_loss, val_metrics = run_epoch(
-                model, val_loader, device, args.lambda_sdf, None, None, smoke_test=True
-            )
+        val_loss, val_metrics = None, None
+        if val_loader is not None:
+            with torch.no_grad():
+                val_loss, val_metrics = run_epoch(
+                    model, val_loader, device, args.lambda_sdf, None, None, smoke_test=True
+                )
         print(json.dumps({"train": train_loss, "train_metrics": train_metrics}, indent=2))
         print(json.dumps({"val": val_loss, "val_metrics": val_metrics}, indent=2))
         smoke_report = {"model": args.model, "input_channels": 3,
-                        "train_windows": len(train_loader.dataset), "val_windows": len(val_loader.dataset),
+                        "train_windows": len(train_loader.dataset), "val_windows": len(val_loader.dataset) if val_loader else 0,
                         "lambda_sdf": args.lambda_sdf, "train": train_loss, "val": val_loss,
                         "final_test_evaluated": False}
         (output_dir / "smoke_report.json").write_text(json.dumps(smoke_report, indent=2), encoding="utf-8")
@@ -381,25 +422,31 @@ def main() -> None:
 
     for epoch in range(start_epoch, args.epochs + 1):
         started = time.time()
+        epoch_lr = optimizer.param_groups[0]["lr"]
         train_loss, train_metrics = run_epoch(
             model, train_loader, device, args.lambda_sdf, optimizer, scaler
         )
-        with torch.no_grad():
-            val_loss, val_metrics = run_epoch(
-                model, val_loader, device, args.lambda_sdf, None, None
-            )
-        val_iou = float(val_metrics["macro_reservoir"]["iou"])
+        val_loss, val_metrics, val_iou = None, None, None
+        if val_loader is not None:
+            with torch.no_grad():
+                val_loss, val_metrics = run_epoch(
+                    model, val_loader, device, args.lambda_sdf, None, None
+                )
+            val_iou = float(val_metrics["macro_reservoir"]["iou"])
         row: dict[str, float | int] = {
             "epoch": epoch,
             "train_loss": train_loss["loss"],
             "train_iou": float(train_metrics["micro"]["iou"]),
-            "val_loss": val_loss["loss"],
-            "val_iou": val_iou,
-            "val_micro_iou": float(val_metrics["micro"]["iou"]),
-            "val_dice": float(val_metrics["micro"]["dice"]),
             "seconds": time.time() - started,
+            "lr": epoch_lr,
         }
+        if val_metrics is not None:
+            row.update(val_loss=val_loss["loss"], val_iou=val_iou,
+                       val_micro_iou=float(val_metrics["micro"]["iou"]),
+                       val_dice=float(val_metrics["micro"]["dice"]))
         for prefix, losses in (("train", train_loss), ("val", val_loss)):
+            if losses is None:
+                continue
             row.update({f"{prefix}_{key}": losses[key] for key in ("bce", "dice_loss", "sdf_loss")})
         row["lambda_sdf"] = args.lambda_sdf
         history.append(row)
@@ -407,13 +454,12 @@ def main() -> None:
             writer = csv.DictWriter(handle, fieldnames=list(row))
             writer.writeheader()
             writer.writerows(history)
-        print(
-            f"Epoch {epoch:03d} | train loss {row['train_loss']:.4f} "
-            f"IoU {row['train_iou']:.4f} | val loss {row['val_loss']:.4f} "
-            f"IoU {row['val_iou']:.4f} Dice {row['val_dice']:.4f}"
-        )
+        message = f"Epoch {epoch:03d} | train loss {row['train_loss']:.4f} IoU {row['train_iou']:.4f} | lr {epoch_lr:.3g}"
+        if val_iou is not None:
+            message += f" | val loss {row['val_loss']:.4f} IoU {row['val_iou']:.4f} Dice {row['val_dice']:.4f}"
+        print(message)
 
-        if val_iou > best_iou:
+        if val_iou is not None and val_iou > best_iou:
             best_iou = val_iou
             best_epoch = epoch
             stale_epochs = 0
@@ -429,23 +475,30 @@ def main() -> None:
             (output_dir / "best_val_metrics.json").write_text(
                 json.dumps(val_metrics, indent=2), encoding="utf-8"
             )
-        else:
+        elif val_iou is not None:
             stale_epochs += 1
+        if scheduler is not None:
+            scheduler.step()
         torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict() if scheduler is not None else None,
                     "scaler": scaler.state_dict(), "epoch": epoch, "config": config,
                     "history": history, "best_iou": best_iou, "best_epoch": best_epoch,
                     "stale_epochs": stale_epochs, "python_rng": random.getstate(),
                     "numpy_rng": np.random.get_state(), "torch_rng": torch.get_rng_state(),
                     "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None,
                     "loader_rng": train_loader.generator.get_state()}, output_dir / "last.pt")
-        if stale_epochs >= args.patience:
+        if val_loader is not None and stale_epochs >= args.patience:
             print(f"Early stopping at epoch {epoch}; best epoch was {best_epoch}.")
             break
 
     if history:
         plot_history(history_path, output_dir / "loss_curves.png")
 
-    summary: dict[str, object] = {"best_epoch": best_epoch, "best_val_iou": best_iou,
+    summary: dict[str, object] = {"best_epoch": best_epoch if val_loader else None,
+                                "best_val_iou": best_iou if val_loader else None,
+                                "no_validation": args.no_validation,
+                                "selected_checkpoint": "last.pt" if args.no_validation else "best.pt",
+                                "last_epoch": history[-1]["epoch"] if history else None,
                                 "overfit_diagnostic_only": bool(args.overfit_windows)}
     if args.evaluate_test:
         if not (output_dir / "best.pt").is_file():

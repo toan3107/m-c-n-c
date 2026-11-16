@@ -124,12 +124,14 @@ class CfCMaskForecaster(nn.Module):
     """Past RGB images -> spatial CfC -> future mask and auxiliary SDF."""
 
     def __init__(self, base_channels: int = 16, time_scale_days: float = 30.0,
-                 *, temporal_kind: str = "cfc", use_actual_time: bool = True) -> None:
+                 *, temporal_kind: str = "cfc", use_actual_time: bool = True,
+                 use_calendar: bool | None = None) -> None:
         super().__init__()
         if time_scale_days <= 0:
             raise ValueError("time_scale_days must be positive")
         self.time_scale_days = time_scale_days
         self.use_actual_time = use_actual_time
+        self.use_calendar = use_actual_time if use_calendar is None else use_calendar
         c, h = base_channels, base_channels * 8
         self.enc1 = ConvBlock(3, c)
         self.enc2 = ConvBlock(c, c * 2)
@@ -167,6 +169,7 @@ class CfCMaskForecaster(nn.Module):
             delta_days = torch.full_like(delta_days, self.time_scale_days)
             delta_days[:, 0] = 0
             horizon_days = torch.full_like(horizon_days, self.time_scale_days)
+        if not self.use_calendar:
             context_season = torch.zeros_like(context_season)
             target_season = torch.zeros_like(target_season)
         x = context_images.reshape(batch * steps, channels, height, width)
@@ -208,7 +211,7 @@ class LastFrameForecaster(UNetWithSDFAux):
 
 
 MODEL_NAMES = ("segmenter_persistence", "last_frame", "convgru", "dt_convgru",
-               "spatial_cfc_notime", "spatial_cfc")
+               "spatial_cfc_notime", "spatial_cfc", "spatial_cfc_nogap", "spatial_cfc_nocalendar")
 
 
 def build_model(config: dict) -> nn.Module:
@@ -220,4 +223,5 @@ def build_model(config: dict) -> nn.Module:
         raise ValueError(f"Unknown model: {name}")
     return CfCMaskForecaster(channels, float(config.get("time_scale_days", 30.)),
                             temporal_kind="convgru" if "convgru" in name else "cfc",
-                            use_actual_time=name in ("dt_convgru", "spatial_cfc"))
+                            use_actual_time=name in ("dt_convgru", "spatial_cfc", "spatial_cfc_nocalendar"),
+                            use_calendar=name in ("dt_convgru", "spatial_cfc", "spatial_cfc_nogap"))

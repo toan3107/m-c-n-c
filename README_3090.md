@@ -1,5 +1,20 @@
 # RTX 3090: Git code updates and one-time dataset import
 
+## Method-v2 protocol (new, explicit profile)
+
+See `PAPER_EXPERIMENT_PLAN.md` for configuration, the full proposed experiment
+matrix, limitations and which additional paper studies are NOT implemented.
+Use `-Config configs/method_v2.json -OutputRoot .\runs_method_v2` for all v2
+stages. This opts into 120 epochs, five warmup epochs and cosine LR decay.
+Legacy commands below without `-Config` retain their 80-epoch confirmation
+budget and constant LR. Never mix old and v2 comparisons in one output root.
+
+Development `confirm` still uses source chronological validation. AFTER method
+freeze, new stage `refit` trains on BOTH source splits with NO validation and
+NO early stopping, selecting `last.pt`. New stage `refit-test` is separately
+locked, requires `-ConfirmFinalTest`, and refuses mismatched plans/incomplete
+refits. No target-lake labels enter training. Do not pull while training.
+
 This repository contains code and all eight small F-Z tables, not satellite
 images or masks. Put the 214 image/mask pairs in a sibling `dataset` directory.
 Original preprocessing stays outside the package. All models receive the same

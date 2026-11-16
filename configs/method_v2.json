@@ -1,0 +1,19 @@
+{
+  "image_size": 512,
+  "base_channels": 16,
+  "batch_size": 2,
+  "context_length": 3,
+  "max_horizon_days": 90,
+  "lr": 0.0003,
+  "weight_decay": 0.0001,
+  "lr_schedule": "warmup_cosine",
+  "warmup_epochs": 5,
+  "min_lr_ratio": 0.01,
+  "epochs": 120,
+  "patience": 20,
+  "seeds": [42],
+  "experiments": [
+    "rgb_persistence", "last_frame", "convgru", "dt_convgru",
+    "cfc_notime", "cfc_no_sdf", "cfc_sdf"
+  ]
+}

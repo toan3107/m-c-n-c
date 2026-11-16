@@ -1,0 +1,34 @@
+{
+  "status": "local_software_checks_passed_not_scientific_results",
+  "protocol": "configs/method_v2.json",
+  "unit_tests_passed": 51,
+  "scheduled_refit_resume_exact_on_cpu_fixture": true,
+  "refit_validation_and_test_guards_tested": true,
+  "isolated_gap_and_calendar_controls_tested": true,
+  "native_dataset_refit_integration": {
+    "device": "cpu",
+    "image_size": 64,
+    "base_channels": 4,
+    "epochs": 2,
+    "source_reservoirs": 6,
+    "train_windows": 109,
+    "validation_windows": 0,
+    "selected_checkpoint": "last.pt",
+    "no_early_stopping": true
+  },
+  "local_cuda_smoke": {
+    "gpu": "RTX 3050 Laptop",
+    "image_size": 128,
+    "batch_size": 1,
+    "base_channels": 16,
+    "experiments": ["cfc_sdf", "cfc_no_gap", "cfc_no_calendar"],
+    "status": "pass"
+  },
+  "legacy_train_resume_native_inference_integration": "pass",
+  "powershell_profile_seed_and_experiment_arrays": "pass",
+  "data_and_manifest_unchanged": true,
+  "full_512px_rtx3090_method_v2_verified": false,
+  "final_test_evaluated": false,
+  "external_paper_baselines_integrated": false,
+  "note": "No full method accuracy claim. Scarcity, missing-observation, source-LOSO and efficiency studies are planned in PAPER_EXPERIMENT_PLAN.md, not automatically implemented."
+}

@@ -1,5 +1,10 @@
 # Configuration rationale for the first method check
 
+This page documents the original constant-LR profile. For the opt-in 120-epoch
+warmup/cosine profile, fixed-budget no-validation refit, and paper experiment
+plan see `configs/method_v2.json` and `PAPER_EXPERIMENT_PLAN.md`. Baseline paper
+settings below are references, not claims that v2 reproduces their full recipes.
+
 Protocol date: 2026-11-17. These are starting settings for a one-seed experiment,
 not a claim that any configuration guarantees publication or optimal accuracy.
 

@@ -1,5 +1,9 @@
 # Prespecified one-seed method-checking protocol, 2026-11-17
 
+This document preserves the original constant-LR development protocol. The
+new opt-in `configs/method_v2.json` profile and final six-source-lake refit are
+specified in `PAPER_EXPERIMENT_PLAN.md`. Do not mix results from the two plans.
+
 ## Research questions
 
 1. Does a learned temporal model improve future-mask prediction over operational
@@ -80,7 +84,7 @@ outcomes or be hidden when reporting Z accuracy.
 
 1. CUDA probe and all-comparator smoke must succeed on the RTX 3090.
 2. Two-window overfit must show learning, not merely successful execution.
-3. Review the pilot validation outputs before launching three-seed confirmation.
+3. Review development outputs before launching the requested one-seed confirmation.
 4. Freeze settings and review the seed-42 confirmation before explicitly unlocking test.
 
 This package has a different manifest from the older five-train/one-validation

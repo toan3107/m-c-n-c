@@ -38,6 +38,10 @@ def main() -> None:
     if checkpoint.get("smoke_only") and args.split == "test":
         raise ValueError("A smoke checkpoint must not score the final test")
     config = checkpoint["config"]
+    if args.split == "val" and config.get("no_validation"):
+        raise ValueError("Refit used source validation labels for training; they cannot be reported as held-out validation")
+    if args.split == "test" and config.get("no_validation") and checkpoint.get("epoch") != config["epochs"]:
+        raise ValueError("Fixed-budget refit is incomplete; final test remains locked")
     if config.get("overfit_windows") and args.split == "test":
         raise ValueError("Overfit diagnostics must not score the final test")
     manifest_hash = hashlib.sha256(args.splits.read_bytes()).hexdigest()
