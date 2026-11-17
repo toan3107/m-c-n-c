@@ -120,6 +120,34 @@ class SpatialGRUCell(nn.Module):
         return (1.0 - update) * hidden + update * candidate
 
 
+class FeatureChangeConditioner(nn.Module):
+    """Residual feature differences; optionally rates per 30-day time unit."""
+
+    def __init__(self, channels: int, mode: str, time_scale_days: float) -> None:
+        super().__init__()
+        if mode not in ("change", "rate") or time_scale_days <= 0:
+            raise ValueError("Feature change requires change/rate mode and a positive time scale")
+        self.mode = mode
+        self.time_scale_days = time_scale_days
+        self.projection = nn.Conv2d(channels, channels, 1, bias=False)
+
+    def forward(self, features: torch.Tensor, delta_days: torch.Tensor) -> torch.Tensor:
+        batch, steps, channels, height, width = features.shape
+        if delta_days.shape != (batch, steps):
+            raise ValueError("Feature-change time gaps do not match the sequence")
+        gaps = delta_days[:, 1:]
+        if not torch.isfinite(gaps).all() or (gaps <= 0).any():
+            raise ValueError("Observed feature-change gaps must be finite and positive")
+        changes = features[:, 1:] - features[:, :-1]
+        if self.mode == "rate":
+            # Acquisitions have day precision; the first frame has no derivative.
+            duration = gaps.clamp_min(1.0) / self.time_scale_days
+            changes = changes / duration[:, :, None, None, None]
+        changes = torch.cat((torch.zeros_like(features[:, :1]), changes), dim=1)
+        residual = self.projection(changes.reshape(batch * steps, channels, height, width))
+        return features + residual.reshape_as(features)
+
+
 class CfCMaskForecaster(nn.Module):
     """Past RGB images -> spatial CfC -> future mask and auxiliary SDF."""
 
@@ -153,6 +181,34 @@ class CfCMaskForecaster(nn.Module):
         self.segmentation_head = nn.Conv2d(c, 1, 1)
         self.sdf_head = nn.Conv2d(c, 1, 1)
 
+    def _dynamic_inputs(self, features: torch.Tensor, delta_days: torch.Tensor) -> torch.Tensor:
+        return features
+
+    def _evolve(self, dynamic: torch.Tensor, delta_days: torch.Tensor,
+                horizon_days: torch.Tensor, context_season: torch.Tensor,
+                target_season: torch.Tensor, *, cell: nn.Module,
+                event_embedding: nn.Module, future_query: torch.Tensor,
+                start_index: int = 0) -> torch.Tensor:
+        batch, steps = dynamic.shape[:2]
+        hidden = torch.zeros_like(dynamic[:, 0])
+        for index in range(start_index, steps):
+            event = torch.cat((context_season[:, index], torch.ones_like(horizon_days).reshape(batch, 1)), dim=1)
+            encoded_event = event_embedding(event).unsqueeze(-1).unsqueeze(-1)
+            hidden = cell(dynamic[:, index] + encoded_event, hidden,
+                          delta_days[:, index] / self.time_scale_days)
+        query_event = torch.cat((target_season, torch.zeros_like(horizon_days).reshape(batch, 1)), dim=1)
+        query = future_query + event_embedding(query_event).unsqueeze(-1).unsqueeze(-1)
+        return cell(query.expand_as(hidden), hidden, horizon_days / self.time_scale_days)
+
+    def _extra_dynamics(self, features: torch.Tensor, delta_days: torch.Tensor,
+                        horizon_days: torch.Tensor, context_season: torch.Tensor,
+                        target_season: torch.Tensor) -> torch.Tensor | None:
+        return None
+
+    def _fuse_extra(self, bottleneck: torch.Tensor, skips: list[torch.Tensor],
+                    extra: torch.Tensor | None) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        return bottleneck, skips
+
     def forward(self, context_images: torch.Tensor, delta_days: torch.Tensor,
                 horizon_days: torch.Tensor, context_season: torch.Tensor,
                 target_season: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -180,27 +236,79 @@ class CfCMaskForecaster(nn.Module):
         bottleneck = self.bottleneck(self.pool(e4))
         dynamic = self.to_dynamic(bottleneck)
         dynamic = dynamic.reshape(batch, steps, *dynamic.shape[1:])
-        hidden = torch.zeros_like(dynamic[:, 0])
-        for index in range(steps):
-            event = torch.cat((context_season[:, index], torch.ones_like(horizon_days).reshape(batch, 1)), dim=1)
-            encoded_event = self.event_embedding(event).unsqueeze(-1).unsqueeze(-1)
-            hidden = self.temporal(dynamic[:, index] + encoded_event, hidden,
-                                   delta_days[:, index] / self.time_scale_days)
+        dynamic = self._dynamic_inputs(dynamic, delta_days)
         # The query contains only the known target date; no future image is supplied.
-        query_event = torch.cat((target_season, torch.zeros_like(horizon_days).reshape(batch, 1)), dim=1)
-        query = self.future_query + self.event_embedding(query_event).unsqueeze(-1).unsqueeze(-1)
-        hidden = self.temporal(query.expand_as(hidden), hidden, horizon_days / self.time_scale_days)
+        hidden = self._evolve(dynamic, delta_days, horizon_days, context_season, target_season,
+                              cell=self.temporal, event_embedding=self.event_embedding,
+                              future_query=self.future_query)
+        fine_features = e4.reshape(batch, steps, *e4.shape[1:])
+        extra = self._extra_dynamics(fine_features, delta_days, horizon_days, context_season, target_season)
         last = lambda features: features.reshape(batch, steps, *features.shape[1:])[:, -1]
         skips = [
             last(features) + projection(F.interpolate(hidden, size=features.shape[-2:], mode="bilinear", align_corners=False))
             for features, projection in zip((e1, e2, e3, e4), self.skip_conditions)
         ]
         x = self.future_bottleneck(torch.cat((last(bottleneck), hidden), dim=1))
+        x, skips = self._fuse_extra(x, skips, extra)
         x = self.dec4(x, skips[3])
         x = self.dec3(x, skips[2])
         x = self.dec2(x, skips[1])
         x = self.dec1(x, skips[0])
         return self.segmentation_head(x), self.sdf_head(x)
+
+
+class ArchitectureCfCForecaster(CfCMaskForecaster):
+    """Controlled change/rate and two-resolution CfC hypotheses, not new SDF dynamics."""
+
+    def __init__(self, base_channels: int = 16, time_scale_days: float = 30.0, *,
+                 change_mode: str | None = None, multiscale: bool = False,
+                 fine_history: bool = True) -> None:
+        super().__init__(base_channels, time_scale_days)
+        c, h, fine = base_channels, base_channels * 8, base_channels * 4
+        self.change_conditioner = (FeatureChangeConditioner(h, change_mode, time_scale_days)
+                                   if change_mode is not None else None)
+        self.multiscale = multiscale
+        self.fine_history = fine_history
+        if multiscale:
+            self.fine_projection = nn.Conv2d(c * 8, fine, 1)
+            self.fine_temporal = SpatialCfCCell(fine)
+            self.fine_event_embedding = nn.Sequential(nn.Linear(3, fine), nn.Tanh(), nn.Linear(fine, fine))
+            self.fine_future_query = nn.Parameter(torch.zeros(1, fine, 1, 1))
+            self.fine_change_conditioner = (FeatureChangeConditioner(fine, change_mode, time_scale_days)
+                                            if change_mode is not None else None)
+            self.fine_to_bottleneck = nn.Conv2d(fine, c * 16, 1)
+            self.fine_to_skips = nn.ModuleList([nn.Conv2d(fine, width, 1) for width in (c, c * 2, c * 4, c * 8)])
+
+    def _dynamic_inputs(self, features: torch.Tensor, delta_days: torch.Tensor) -> torch.Tensor:
+        return self.change_conditioner(features, delta_days) if self.change_conditioner is not None else features
+
+    def _extra_dynamics(self, features: torch.Tensor, delta_days: torch.Tensor,
+                        horizon_days: torch.Tensor, context_season: torch.Tensor,
+                        target_season: torch.Tensor) -> torch.Tensor | None:
+        if not self.multiscale:
+            return None
+        batch, steps, channels, height, width = features.shape
+        fine = self.fine_projection(features.reshape(batch * steps, channels, height, width))
+        fine = fine.reshape(batch, steps, *fine.shape[1:])
+        if self.fine_change_conditioner is not None:
+            fine = self.fine_change_conditioner(fine, delta_days)
+        start_index = 0 if self.fine_history else steps - 1
+        if not self.fine_history:
+            delta_days = delta_days.clone()
+            delta_days[:, start_index] = 0
+        return self._evolve(fine, delta_days, horizon_days, context_season, target_season,
+                            cell=self.fine_temporal, event_embedding=self.fine_event_embedding,
+                            future_query=self.fine_future_query, start_index=start_index)
+
+    def _fuse_extra(self, bottleneck: torch.Tensor, skips: list[torch.Tensor],
+                    extra: torch.Tensor | None) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        if extra is None:
+            return bottleneck, skips
+        bottleneck = bottleneck + self.fine_to_bottleneck(
+            F.interpolate(extra, size=bottleneck.shape[-2:], mode="bilinear", align_corners=False))
+        skips = [skip + projection(F.interpolate(extra, size=skip.shape[-2:], mode="bilinear", align_corners=False))
+                 for skip, projection in zip(skips, self.fine_to_skips)]
+        return bottleneck, skips
 
 
 class LastFrameForecaster(UNetWithSDFAux):
@@ -210,8 +318,16 @@ class LastFrameForecaster(UNetWithSDFAux):
         return super().forward(context_images[:, -1])
 
 
+ARCHITECTURE_MODELS = {
+    "spatial_cfc_change": {"change_mode": "change"},
+    "spatial_cfc_rate": {"change_mode": "rate"},
+    "spatial_cfc_multiscale": {"multiscale": True},
+    "spatial_cfc_multiscale_rate": {"multiscale": True, "change_mode": "rate"},
+    "spatial_cfc_multiscale_lastfine": {"multiscale": True, "fine_history": False},
+}
 MODEL_NAMES = ("segmenter_persistence", "last_frame", "convgru", "dt_convgru",
-               "spatial_cfc_notime", "spatial_cfc", "spatial_cfc_nogap", "spatial_cfc_nocalendar")
+               "spatial_cfc_notime", "spatial_cfc", "spatial_cfc_nogap", "spatial_cfc_nocalendar",
+               *ARCHITECTURE_MODELS)
 
 
 def build_model(config: dict) -> nn.Module:
@@ -221,6 +337,9 @@ def build_model(config: dict) -> nn.Module:
         return LastFrameForecaster(base_channels=channels)
     if name not in MODEL_NAMES:
         raise ValueError(f"Unknown model: {name}")
+    if name in ARCHITECTURE_MODELS:
+        return ArchitectureCfCForecaster(channels, float(config.get("time_scale_days", 30.)),
+                                         **ARCHITECTURE_MODELS[name])
     return CfCMaskForecaster(channels, float(config.get("time_scale_days", 30.)),
                             temporal_kind="convgru" if "convgru" in name else "cfc",
                             use_actual_time=name in ("dt_convgru", "spatial_cfc", "spatial_cfc_nocalendar"),

@@ -147,7 +147,7 @@ AdamW learning rate 0.0003 and weight decay 0.0001. Only validation is scored.
 Review the results BEFORE starting confirmation. This pilot is exploratory,
 not a final comparison and not grounds to select the best random seed.
 
-### Confirm: the main one-seed method check
+### Confirm: the original one-seed method check
 
 ```powershell
 .\run_3090.ps1 -Stage confirm
@@ -155,12 +155,28 @@ not a final comparison and not grounds to select the best random seed.
 
 Seed 42 ONLY; maximum 80 epochs each; patience 15. All seven comparisons,
 same settings within the stage. This still does NOT evaluate final-test lakes.
-The 20-epoch pilot is optional, not the main training budget. No scheduler or
-warmup is implemented: learning rate is constant at 0.0003. Do not describe
-this package as using cosine decay. For a larger predeclared budget, use
+The 20-epoch pilot is optional, not the main training budget. WITHOUT an explicit
+config, this legacy command uses a constant 0.0003 learning rate. Explicit v2/v3
+profiles enable warmup/cosine; do not mix those protocols. For a larger legacy budget, use
 `-Epochs 200` with a new `-OutputRoot`; patience remains 15.
 Decide whether settings need changes based on development data, document the
 changes, and use a NEW output root for a new protocol rather than overwriting.
+
+### Fixed-loss architecture search: 13 full-size configurations
+
+```powershell
+& .\run_3090.ps1 -Stage smoke -Config configs/method_arch_v3.json -OutputRoot .\runs_arch_v3
+& .\run_3090.ps1 -Stage confirm -Config configs/method_arch_v3.json -OutputRoot .\runs_arch_v3
+```
+
+The profile tests actual architecture mechanisms, not SDF-weight tuning:
+explicit feature change, elapsed-time-normalized feature change, a second CfC
+stream at 1/8 resolution, their combination, and a matched fine-history control.
+Architecture arms all keep SDF lambda=0.1. Four comparators and three component
+ablations complete the 13 runs. One seed (42), 512 pixels, batch 2, base 16,
+maximum 120 epochs, patience 20, five warmup epochs and cosine decay.
+See `ARCHITECTURE_SEARCH.md` for the exact comparisons, common settings,
+checkpoints, interpretation limits and the locked-test policy.
 
 ## 4. Main comparisons
 

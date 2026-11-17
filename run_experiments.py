@@ -22,6 +22,11 @@ EXPERIMENTS = {
     "cfc_sdf_003": ("spatial_cfc", .03),
     "cfc_no_gap": ("spatial_cfc_nogap", .1),
     "cfc_no_calendar": ("spatial_cfc_nocalendar", .1),
+    "cfc_change_sdf": ("spatial_cfc_change", .1),
+    "cfc_rate_sdf": ("spatial_cfc_rate", .1),
+    "cfc_multiscale_sdf": ("spatial_cfc_multiscale", .1),
+    "cfc_multiscale_rate_sdf": ("spatial_cfc_multiscale_rate", .1),
+    "cfc_multiscale_lastfine_sdf": ("spatial_cfc_multiscale_lastfine", .1),
 }
 MAIN_EXPERIMENTS = list(EXPERIMENTS)[:7]
 DEFAULTS = dict(image_size=512, base_channels=16, batch_size=2, context_length=3,

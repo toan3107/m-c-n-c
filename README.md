@@ -6,6 +6,11 @@ Git deployment update (2026-11-17): clone this repository into the project's
 Default: one seed (42); six training lakes with temporal validation and two
 locked unseen test lakes. Existing archive deployments are not overwritten.
 
+For the fixed-SDF-weight architecture search, use
+[`ARCHITECTURE_SEARCH.md`](ARCHITECTURE_SEARCH.md) and
+`configs/method_arch_v3.json`: 13 one-seed development runs, including five
+new architecture/control variants. This is not a SDF-weight sweep.
+
 ## Input and directory contract
 
 The project has two main directories; only `code` is a Git checkout:

@@ -12,6 +12,34 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+ARCHITECTURE_CONTRASTS = (
+    ("cfc_change_sdf", "cfc_sdf"),
+    ("cfc_rate_sdf", "cfc_change_sdf"),
+    ("cfc_rate_sdf", "cfc_sdf"),
+    ("cfc_multiscale_sdf", "cfc_sdf"),
+    ("cfc_multiscale_sdf", "cfc_multiscale_lastfine_sdf"),
+    ("cfc_multiscale_rate_sdf", "cfc_rate_sdf"),
+    ("cfc_multiscale_rate_sdf", "cfc_multiscale_sdf"),
+)
+
+
+def architecture_contrasts(groups: dict[str, list[dict]]) -> list[dict]:
+    contrasts = []
+    for left, right in ARCHITECTURE_CONTRASTS:
+        left_runs = {row["seed"]: row for row in groups.get(left, [])}
+        right_runs = {row["seed"]: row for row in groups.get(right, [])}
+        common = sorted(left_runs.keys() & right_runs.keys())
+        if not common:
+            continue
+        row = {"contrast": f"{left}_minus_{right}", "paired_seeds": len(common)}
+        for metric in ("iou", "boundary_f1_20m", "area_mae_km2"):
+            deltas = [float(left_runs[seed][metric]) - float(right_runs[seed][metric]) for seed in common]
+            row[f"{metric}_difference_mean"] = float(np.mean(deltas))
+            row[f"{metric}_difference_sd"] = float(np.std(deltas, ddof=1)) if len(deltas) > 1 else None
+        contrasts.append(row)
+    return contrasts
+
+
 def write_csv(path: Path, rows: list[dict]) -> None:
     if not rows:
         return
@@ -76,17 +104,19 @@ def main() -> None:
                                 "macro_iou_difference_mean": float(np.mean(deltas)),
                                 "macro_iou_difference_sd": float(np.std(deltas, ddof=1)) if len(deltas) > 1 else None})
     write_csv(root / "paired_seed_differences.csv", differences)
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5), constrained_layout=True)
+    write_csv(root / "architecture_contrasts.csv", architecture_contrasts(groups))
+    fig, axes = plt.subplots(1, 3, figsize=(16, max(5, .42 * len(summary) + 1.5)), sharey=True, constrained_layout=True)
     colors = ["#64748b", "#167d9a", "#c47b25", "#32885a", "#b55968", "#6565a5", "#ba4c22"]
     for axis, metric, title in zip(axes, ("iou", "boundary_f1_20m", "area_mae_km2"),
                                    ("Future-mask native IoU", "Boundary F1 (20 m)", "Area MAE (km2)")):
         x = np.arange(len(summary))
         y = [row[f"{metric}_mean"] for row in summary]
         sd = [row[f"{metric}_sd"] or 0. for row in summary]
-        axis.bar(x, y, yerr=sd, color=[colors[i % len(colors)] for i in x], capsize=3)
-        axis.set_xticks(x, [row["experiment"] for row in summary], rotation=50, ha="right", fontsize=9)
+        axis.barh(x, y, xerr=sd, color=[colors[i % len(colors)] for i in x], capsize=3)
+        axis.set_yticks(x, [row["experiment"] for row in summary], fontsize=9)
         axis.set_title(title)
-        axis.grid(axis="y", alpha=.2)
+        axis.grid(axis="x", alpha=.2)
+    axes[0].invert_yaxis()
     single_seed = all(len(runs) == 1 for runs in groups.values())
     fig.suptitle("Single-seed method check; run-to-run variability not estimated" if single_seed else
                  "Mean across completed seeds; sample SD where available, not confidence intervals")
