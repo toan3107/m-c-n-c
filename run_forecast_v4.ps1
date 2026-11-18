@@ -5,6 +5,9 @@ param(
     [switch]$DryRun
 )
 $ErrorActionPreference = "Stop"
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $arguments = @{
     Config = "configs/method_forecast_v4.json"
     EnvDir = $EnvDir

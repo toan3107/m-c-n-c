@@ -68,6 +68,7 @@ From the existing code directory after `git pull --ff-only`:
 ```
 
 The wrapper runs full-size smoke first, then confirm only if smoke succeeds.
+It enables UTF-8 for Python/output so Vietnamese directory names are supported.
 Use `-DryRun` to print both stages without training, or `-Resume` to resume an
 identical interrupted v4 confirmation. No test-unlock argument is exposed.
 
