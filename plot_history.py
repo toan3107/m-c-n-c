@@ -35,6 +35,17 @@ def plot_history(history_path: str | Path, output: str | Path) -> None:
         axis.legend(fontsize=8)
     fig.savefig(output, dpi=180)
     plt.close(fig)
+    if "val_z_coverage" in rows[0]:
+        fig, axes = plt.subplots(1, 3, figsize=(12, 3.5), constrained_layout=True)
+        for axis, key, title in zip(axes, ("val_z_mae_m", "val_z_rmse_m", "val_z_coverage"),
+                                   ("Validation Z MAE (m)", "Validation Z RMSE (m)", "Fixed-target Z coverage")):
+            points = [float(row[key]) if row.get(key) else float("nan") for row in rows]
+            axis.plot(epochs, points)
+            axis.set(title=title, xlabel="Epoch")
+            axis.grid(alpha=.2)
+        axes[2].set_ylim(0, 1.02)
+        fig.savefig(Path(output).with_name("forecast_curves.png"), dpi=180)
+        plt.close(fig)
 
 
 if __name__ == "__main__":

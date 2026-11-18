@@ -20,6 +20,9 @@ ARCHITECTURE_CONTRASTS = (
     ("cfc_multiscale_sdf", "cfc_multiscale_lastfine_sdf"),
     ("cfc_multiscale_rate_sdf", "cfc_rate_sdf"),
     ("cfc_multiscale_rate_sdf", "cfc_multiscale_sdf"),
+    ("cfc_residual_sdf", "cfc_sdf"),
+    ("cfc_residual_anchor_sdf", "cfc_residual_sdf"),
+    ("cfc_residual_anchor_sdf", "cfc_sdf"),
 )
 
 
@@ -60,27 +63,40 @@ def main() -> None:
         if data.get("smoke_only"):
             continue
         name = path.parents[2].name
+        cohort = data.get("physical", {}).get("fixed_target_cohort", {})
         row = {"experiment": name, "seed": data["seed"], "split": data["split"],
                "samples": data["samples"], "parameters": data.get("parameters"),
                "lambda_sdf": data["lambda_sdf"], "z_valid_samples": data["z_valid_samples"],
+               "z_target_samples": cohort.get("target_samples"),
+               "z_invalid_predictions": cohort.get("invalid_predictions"),
+               "z_coverage": cohort.get("coverage"),
                **data["macro_reservoir"]}
         details.append(row)
         groups[name].append(row)
         for reservoir, values in data["per_reservoir"].items():
+            if "checkpoint_selection" in data:
+                native = data["physical"]["per_reservoir"][reservoir]
+                values = dict(values)
+                complete = native["z_target_samples"] and not native["z_invalid_predictions"]
+                for key in ("z_mae_m", "z_rmse_m"):
+                    values[key] = native[key] if complete and native["level_evaluation"] == "primary" else None
             lake_values[(name, reservoir)].append(values)
     if not details:
         raise ValueError("No completed validation/test evaluations found")
     plan = json.loads((root / "experiment_plan.json").read_text(encoding="utf-8"))
     missing = [(name, seed) for name in plan["experiments"] for seed in plan["seeds"]
                if not any(row["experiment"] == name and row["seed"] == seed for row in details)]
-    metrics = ("iou", "dice", "boundary_f1_20m", "area_mae_km2", "area_relative_mae", "z_mae_m", "z_rmse_m")
+    metrics = ("iou", "dice", "boundary_f1_20m", "area_mae_km2", "area_rmse_km2", "area_relative_mae", "z_mae_m", "z_rmse_m")
     summary = []
     for name, runs in sorted(groups.items()):
         row = {"experiment": name, "seeds_completed": len(runs), "parameters": runs[0]["parameters"]}
         for metric in metrics:
-            values = [float(run[metric]) for run in runs if run[metric] is not None]
+            values = [float(run[metric]) for run in runs if run.get(metric) is not None]
             row[f"{metric}_mean"] = float(np.mean(values)) if values else None
             row[f"{metric}_sd"] = float(np.std(values, ddof=1)) if len(values) > 1 else None
+        for key in ("z_target_samples", "z_invalid_predictions", "z_coverage"):
+            values = [float(run[key]) for run in runs if run.get(key) is not None]
+            row[f"{key}_mean"] = float(np.mean(values)) if values else None
         summary.append(row)
     write_csv(root / "all_seed_metrics.csv", details)
     write_csv(root / "comparison.csv", summary)
@@ -88,7 +104,7 @@ def main() -> None:
     for (name, lake), runs in sorted(lake_values.items()):
         row = {"experiment": name, "reservoir": lake, "seeds_completed": len(runs)}
         for metric in metrics:
-            values = [float(run[metric]) for run in runs if run[metric] is not None]
+            values = [float(run[metric]) for run in runs if run.get(metric) is not None]
             row[f"{metric}_mean"] = float(np.mean(values)) if values else None
         by_lake.append(row)
     write_csv(root / "per_reservoir_comparison.csv", by_lake)
@@ -107,10 +123,13 @@ def main() -> None:
     write_csv(root / "architecture_contrasts.csv", architecture_contrasts(groups))
     fig, axes = plt.subplots(1, 3, figsize=(16, max(5, .42 * len(summary) + 1.5)), sharey=True, constrained_layout=True)
     colors = ["#64748b", "#167d9a", "#c47b25", "#32885a", "#b55968", "#6565a5", "#ba4c22"]
-    for axis, metric, title in zip(axes, ("iou", "boundary_f1_20m", "area_mae_km2"),
-                                   ("Future-mask native IoU", "Boundary F1 (20 m)", "Area MAE (km2)")):
+    forecasting = plan.get("selection_metric") == "z_mae_support_first"
+    plot_metrics = ("z_mae_m", "z_rmse_m", "area_mae_km2") if forecasting else ("iou", "boundary_f1_20m", "area_mae_km2")
+    titles = ("Z MAE (m); full coverage only", "Z RMSE (m); full coverage only", "Area MAE (km2)") if forecasting else (
+        "Future-mask native IoU", "Boundary F1 (20 m)", "Area MAE (km2)")
+    for axis, metric, title in zip(axes, plot_metrics, titles):
         x = np.arange(len(summary))
-        y = [row[f"{metric}_mean"] for row in summary]
+        y = [row[f"{metric}_mean"] if row[f"{metric}_mean"] is not None else np.nan for row in summary]
         sd = [row[f"{metric}_sd"] or 0. for row in summary]
         axis.barh(x, y, xerr=sd, color=[colors[i % len(colors)] for i in x], capsize=3)
         axis.set_yticks(x, [row["experiment"] for row in summary], fontsize=9)

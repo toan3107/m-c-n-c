@@ -70,6 +70,9 @@ class PhysicalMeter:
                 "z_sq_error_sum": 0.0,
                 "target_out_of_support": 0.0,
                 "prediction_out_of_support": 0.0,
+                "z_target_samples": 0.0,
+                "z_invalid_predictions": 0.0,
+                "eligible_area_scaled_error_sum": 0.0,
             }
         )
 
@@ -132,6 +135,14 @@ class PhysicalMeter:
                 stats["prediction_out_of_support"] = (
                     float(stats["prediction_out_of_support"]) + 1.0
                 )
+            if target_z is not None:
+                stats["z_target_samples"] = float(stats["z_target_samples"]) + 1.0
+                stats["eligible_area_scaled_error_sum"] = (
+                    float(stats["eligible_area_scaled_error_sum"])
+                    + abs(area_error) / float(curve.area_km2[-1] - curve.area_km2[0])
+                )
+                if predicted_z is None:
+                    stats["z_invalid_predictions"] = float(stats["z_invalid_predictions"]) + 1.0
             if target_z is None or predicted_z is None:
                 continue
             z_error = predicted_z - target_z
@@ -143,6 +154,7 @@ class PhysicalMeter:
     def finalize(stats: dict[str, float | str]) -> dict[str, float | str | int | None]:
         area_count = int(float(stats["area_samples"]))
         z_count = int(float(stats["z_samples"]))
+        eligible = int(float(stats["z_target_samples"]))
         return {
             "level_evaluation": str(stats["level_evaluation"]),
             "samples": int(float(stats["samples"])),
@@ -162,6 +174,12 @@ class PhysicalMeter:
             ),
             "target_out_of_support": int(float(stats["target_out_of_support"])),
             "prediction_out_of_support": int(float(stats["prediction_out_of_support"])),
+            "z_target_samples": eligible,
+            "z_invalid_predictions": int(float(stats["z_invalid_predictions"])),
+            "z_coverage": z_count / eligible if eligible else None,
+            "eligible_area_mae_fraction_of_fz_span": (
+                float(stats["eligible_area_scaled_error_sum"]) / eligible if eligible else None
+            ),
         }
 
     def summarize(self) -> dict[str, object]:
@@ -178,9 +196,28 @@ class PhysicalMeter:
         for metric in ("area_mae_km2", "area_rmse_km2", "z_mae_m", "z_rmse_m"):
             values = [float(item[metric]) for item in primary if item[metric] is not None]
             macro_primary[metric] = float(np.mean(values)) if values else None
+        eligible_lakes = [item for item in primary if item["z_target_samples"]]
+        eligible = sum(item["z_target_samples"] for item in eligible_lakes)
+        invalid = sum(item["z_invalid_predictions"] for item in eligible_lakes)
+        complete = bool(eligible) and invalid == 0
+        cohort = {
+            "target_samples": eligible,
+            "valid_predictions": eligible - invalid,
+            "invalid_predictions": invalid,
+            "target_out_of_support": sum(item["target_out_of_support"] for item in primary),
+            "reservoirs": [name for name, item in per_reservoir.items()
+                           if item["level_evaluation"] == "primary" and item["z_target_samples"]],
+            "coverage": (eligible - invalid) / eligible if eligible else None,
+            "z_mae_m": float(np.mean([item["z_mae_m"] for item in eligible_lakes])) if complete else None,
+            "z_rmse_m": float(np.mean([item["z_rmse_m"] for item in eligible_lakes])) if complete else None,
+            "area_mae_fraction_of_fz_span": float(np.mean([
+                item["eligible_area_mae_fraction_of_fz_span"] for item in eligible_lakes
+            ])) if eligible_lakes else None,
+        }
         return {
             "per_reservoir": per_reservoir,
             "macro_primary_reservoirs": macro_primary,
+            "fixed_target_cohort": cohort,
             "note": (
                 "Z is derived from predicted and target mask areas. Curves are never "
                 "extrapolated; diagnostic and disabled reservoirs are excluded from the "

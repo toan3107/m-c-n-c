@@ -198,7 +198,12 @@ class CfCMaskForecaster(nn.Module):
                           delta_days[:, index] / self.time_scale_days)
         query_event = torch.cat((target_season, torch.zeros_like(horizon_days).reshape(batch, 1)), dim=1)
         query = future_query + event_embedding(query_event).unsqueeze(-1).unsqueeze(-1)
-        return cell(query.expand_as(hidden), hidden, horizon_days / self.time_scale_days)
+        return self._forecast_query(query.expand_as(hidden), hidden,
+                                    horizon_days / self.time_scale_days, cell)
+
+    def _forecast_query(self, query: torch.Tensor, hidden: torch.Tensor,
+                        elapsed: torch.Tensor, cell: nn.Module) -> torch.Tensor:
+        return cell(query, hidden, elapsed)
 
     def _extra_dynamics(self, features: torch.Tensor, delta_days: torch.Tensor,
                         horizon_days: torch.Tensor, context_season: torch.Tensor,
@@ -255,6 +260,43 @@ class CfCMaskForecaster(nn.Module):
         x = self.dec2(x, skips[1])
         x = self.dec1(x, skips[0])
         return self.segmentation_head(x), self.sdf_head(x)
+
+
+class ResidualForecastHead(nn.Module):
+    """Past-state increment conditioned on the known query date and real horizon."""
+
+    def __init__(self, channels: int, zero_anchor: bool) -> None:
+        super().__init__()
+        self.zero_anchor = zero_anchor
+        self.increment = nn.Sequential(
+            nn.Conv2d(channels * 2 + 1, channels, 3, padding=1),
+            nn.Tanh(),
+            nn.Conv2d(channels, channels, 1),
+        )
+
+    def forward(self, query: torch.Tensor, hidden: torch.Tensor,
+                elapsed: torch.Tensor) -> torch.Tensor:
+        if not torch.isfinite(elapsed).all() or (elapsed < 0).any():
+            raise ValueError("Forecast elapsed time must be finite and nonnegative")
+        duration = elapsed.reshape(-1, 1, 1, 1)
+        time_channel = torch.log1p(duration).expand(-1, 1, *hidden.shape[-2:])
+        change = self.increment(torch.cat((hidden, query, time_channel), dim=1))
+        # Fixed 30-day unit comes from the parent; no additional learned weights.
+        scale = -torch.expm1(-duration) if self.zero_anchor else 1.0
+        return hidden + scale * change
+
+
+class ResidualCfCForecaster(CfCMaskForecaster):
+    """CfC assimilates past images; a separate head forecasts latent increments."""
+
+    def __init__(self, base_channels: int = 16, time_scale_days: float = 30.0,
+                 *, zero_anchor: bool = False) -> None:
+        super().__init__(base_channels, time_scale_days)
+        self.forecast_head = ResidualForecastHead(base_channels * 8, zero_anchor)
+
+    def _forecast_query(self, query: torch.Tensor, hidden: torch.Tensor,
+                        elapsed: torch.Tensor, cell: nn.Module) -> torch.Tensor:
+        return self.forecast_head(query, hidden, elapsed)
 
 
 class ArchitectureCfCForecaster(CfCMaskForecaster):
@@ -327,6 +369,7 @@ ARCHITECTURE_MODELS = {
 }
 MODEL_NAMES = ("segmenter_persistence", "last_frame", "convgru", "dt_convgru",
                "spatial_cfc_notime", "spatial_cfc", "spatial_cfc_nogap", "spatial_cfc_nocalendar",
+               "spatial_cfc_residual", "spatial_cfc_residual_anchor",
                *ARCHITECTURE_MODELS)
 
 
@@ -337,6 +380,9 @@ def build_model(config: dict) -> nn.Module:
         return LastFrameForecaster(base_channels=channels)
     if name not in MODEL_NAMES:
         raise ValueError(f"Unknown model: {name}")
+    if name in ("spatial_cfc_residual", "spatial_cfc_residual_anchor"):
+        return ResidualCfCForecaster(channels, float(config.get("time_scale_days", 30.)),
+                                      zero_anchor=name.endswith("_anchor"))
     if name in ARCHITECTURE_MODELS:
         return ArchitectureCfCForecaster(channels, float(config.get("time_scale_days", 30.)),
                                          **ARCHITECTURE_MODELS[name])

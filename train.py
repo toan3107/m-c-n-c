@@ -21,6 +21,7 @@ from dataset import ReservoirSequenceDataset
 from model import MODEL_NAMES, build_model
 from physics import PhysicalMeter
 from plot_history import plot_history
+from selection import SELECTION_METRICS, checkpoint_selection
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-size", type=int, default=512)
     parser.add_argument("--base-channels", type=int, default=16)
     parser.add_argument("--model", choices=MODEL_NAMES, default="spatial_cfc")
+    parser.add_argument("--selection-metric", choices=SELECTION_METRICS, default="iou")
     parser.add_argument("--overfit-windows", type=int, help="Diagnostic only: cap train/val windows and disable augmentation")
     parser.add_argument("--context-length", type=int, default=3)
     parser.add_argument("--max-horizon-days", type=float)
@@ -186,6 +188,7 @@ def run_epoch(
     optimizer: torch.optim.Optimizer | None,
     scaler: torch.amp.GradScaler | None,
     smoke_test: bool = False,
+    fp32_validation: bool = False,
 ) -> tuple[dict[str, float], dict[str, object]]:
     training = optimizer is not None
     model.train(training)
@@ -204,7 +207,7 @@ def run_epoch(
 
         if training:
             optimizer.zero_grad(set_to_none=True)
-        amp_enabled = device.type == "cuda"
+        amp_enabled = device.type == "cuda" and (training or not fp32_validation)
         with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
             seg_logits, sdf_logits = model(
                 context,
@@ -365,12 +368,14 @@ def main() -> None:
 
     history: list[dict[str, float | int]] = []
     best_iou, best_epoch, stale_epochs, start_epoch = -1.0, 0, 0, 1
+    best_selection = None
     if args.resume:
         if args.resume.resolve().parent != output_dir:
             raise ValueError("Resume must use the same output directory as last.pt")
         checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
         for key, default in (("no_validation", False), ("lr_schedule", "constant"),
-                             ("warmup_epochs", 0), ("min_lr_ratio", .01)):
+                             ("warmup_epochs", 0), ("min_lr_ratio", .01),
+                             ("selection_metric", "iou")):
             if checkpoint["config"].get(key, default) != config[key]:
                 raise ValueError(f"Resume configuration differs: {key}")
         if checkpoint["config"]["train_splits"] != config["train_splits"]:
@@ -387,6 +392,10 @@ def main() -> None:
         scaler.load_state_dict(checkpoint["scaler"])
         history = checkpoint["history"]
         best_iou, best_epoch = checkpoint["best_iou"], checkpoint["best_epoch"]
+        best_selection = checkpoint.get("best_selection")
+        if best_selection is None and best_epoch and args.selection_metric == "iou":
+            best_selection = {"metric": "iou", "key": [-best_iou], "value": best_iou,
+                              "criterion": "macro_iou"}
         stale_epochs, start_epoch = checkpoint["stale_epochs"], checkpoint["epoch"] + 1
         random.setstate(checkpoint["python_rng"])
         np.random.set_state(checkpoint["numpy_rng"])
@@ -405,7 +414,8 @@ def main() -> None:
         if val_loader is not None:
             with torch.no_grad():
                 val_loss, val_metrics = run_epoch(
-                    model, val_loader, device, args.lambda_sdf, None, None, smoke_test=True
+                    model, val_loader, device, args.lambda_sdf, None, None, smoke_test=True,
+                    fp32_validation=args.selection_metric != "iou"
                 )
         print(json.dumps({"train": train_loss, "train_metrics": train_metrics}, indent=2))
         print(json.dumps({"val": val_loss, "val_metrics": val_metrics}, indent=2))
@@ -426,13 +436,15 @@ def main() -> None:
         train_loss, train_metrics = run_epoch(
             model, train_loader, device, args.lambda_sdf, optimizer, scaler
         )
-        val_loss, val_metrics, val_iou = None, None, None
+        val_loss, val_metrics, val_iou, selection = None, None, None, None
         if val_loader is not None:
             with torch.no_grad():
                 val_loss, val_metrics = run_epoch(
-                    model, val_loader, device, args.lambda_sdf, None, None
+                    model, val_loader, device, args.lambda_sdf, None, None,
+                    fp32_validation=args.selection_metric != "iou"
                 )
             val_iou = float(val_metrics["macro_reservoir"]["iou"])
+            selection = checkpoint_selection(val_metrics, args.selection_metric)
         row: dict[str, float | int] = {
             "epoch": epoch,
             "train_loss": train_loss["loss"],
@@ -444,6 +456,12 @@ def main() -> None:
             row.update(val_loss=val_loss["loss"], val_iou=val_iou,
                        val_micro_iou=float(val_metrics["micro"]["iou"]),
                        val_dice=float(val_metrics["micro"]["dice"]))
+            if args.selection_metric != "iou":
+                row.update(val_z_mae_m=selection["z_mae_m"], val_z_rmse_m=selection["z_rmse_m"],
+                           val_z_target_samples=selection["target_samples"],
+                           val_z_invalid_predictions=selection["invalid_predictions"],
+                           val_z_coverage=selection["coverage"],
+                           val_selection_value=selection["value"])
         for prefix, losses in (("train", train_loss), ("val", val_loss)):
             if losses is None:
                 continue
@@ -457,9 +475,13 @@ def main() -> None:
         message = f"Epoch {epoch:03d} | train loss {row['train_loss']:.4f} IoU {row['train_iou']:.4f} | lr {epoch_lr:.3g}"
         if val_iou is not None:
             message += f" | val loss {row['val_loss']:.4f} IoU {row['val_iou']:.4f} Dice {row['val_dice']:.4f}"
+        if selection is not None and args.selection_metric != "iou":
+            message += (f" | Z coverage {selection['valid_predictions']}/{selection['target_samples']}"
+                        f" | {selection['criterion']} {selection['value']:.4f}")
         print(message)
 
-        if val_iou is not None and val_iou > best_iou:
+        if selection is not None and (best_selection is None or selection["key"] < best_selection["key"]):
+            best_selection = selection
             best_iou = val_iou
             best_epoch = epoch
             stale_epochs = 0
@@ -469,6 +491,7 @@ def main() -> None:
                     "epoch": epoch,
                     "val_metrics": val_metrics,
                     "config": config,
+                    "selection": selection,
                 },
                 output_dir / "best.pt",
             )
@@ -483,6 +506,7 @@ def main() -> None:
                     "scheduler": scheduler.state_dict() if scheduler is not None else None,
                     "scaler": scaler.state_dict(), "epoch": epoch, "config": config,
                     "history": history, "best_iou": best_iou, "best_epoch": best_epoch,
+                    "best_selection": best_selection,
                     "stale_epochs": stale_epochs, "python_rng": random.getstate(),
                     "numpy_rng": np.random.get_state(), "torch_rng": torch.get_rng_state(),
                     "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None,
@@ -495,7 +519,10 @@ def main() -> None:
         plot_history(history_path, output_dir / "loss_curves.png")
 
     summary: dict[str, object] = {"best_epoch": best_epoch if val_loader else None,
-                                "best_val_iou": best_iou if val_loader else None,
+                                "best_val_iou": best_iou if val_loader and args.selection_metric == "iou" else None,
+                                "iou_at_selected_checkpoint": best_iou if val_loader else None,
+                                "selection_metric": args.selection_metric,
+                                "best_selection": best_selection,
                                 "no_validation": args.no_validation,
                                 "selected_checkpoint": "last.pt" if args.no_validation else "best.pt",
                                 "last_epoch": history[-1]["epoch"] if history else None,
@@ -510,7 +537,8 @@ def main() -> None:
         )
         with torch.no_grad():
             test_loss, test_metrics = run_epoch(
-                model, test_loader, device, args.lambda_sdf, None, None
+                model, test_loader, device, args.lambda_sdf, None, None,
+                fp32_validation=args.selection_metric != "iou"
             )
         summary["test_loss"] = test_loss
         summary["test_metrics"] = test_metrics

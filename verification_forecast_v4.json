@@ -1,0 +1,35 @@
+{
+  "status": "local_software_checks_passed_not_scientific_results",
+  "profile": "configs/method_forecast_v4.json",
+  "experiments": ["cfc_sdf", "cfc_residual_sdf", "cfc_residual_anchor_sdf"],
+  "seeds": [42],
+  "sdf_weight": 0.1,
+  "unit_tests_passed": 77,
+  "residual_heads_parameter_matched": true,
+  "reference_forward_cpu_hashes_unchanged": true,
+  "sdf_head_never_drives_mask_inference": true,
+  "anchored_head_zero_horizon_identity": true,
+  "checkpoint_resume_matches_uninterrupted_cpu_training": true,
+  "validation_selection_matches_native_evaluation": true,
+  "partial_z_coverage_cannot_look_like_lower_primary_mae": true,
+  "full_profile_powershell_wrapper_dry_run": "passed",
+  "local_cuda_smoke": {
+    "gpu": "RTX 3050 Laptop",
+    "image_size": 128,
+    "batch_size": 1,
+    "base_channels": 16,
+    "completed": 3,
+    "train_windows": 79,
+    "val_windows": 30
+  },
+  "fixed_validation_cohort": {
+    "supported_targets": 30,
+    "unsupported_targets": 0,
+    "source_reservoirs": 6
+  },
+  "dataset_splits_and_fz_tables_unchanged": true,
+  "full_512px_batch2_rtx3090_verified": false,
+  "remote_rtx3090_training_started": false,
+  "final_test_evaluated": false,
+  "note": "Remote SSH key authentication was denied. The v4 wrapper runs full-size smoke then confirmation on the RTX 3090 when invoked there. Local smoke is not forecasting-accuracy evidence."
+}

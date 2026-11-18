@@ -6,6 +6,12 @@ Git deployment update (2026-11-17): clone this repository into the project's
 Default: one seed (42); six training lakes with temporal validation and two
 locked unseen test lakes. Existing archive deployments are not overwritten.
 
+For the three-arm forecast-head study, use
+[`FORECAST_SEARCH.md`](FORECAST_SEARCH.md) and `configs/method_forecast_v4.json`.
+This retrains the reference and two residual variants, all at SDF weight 0.1,
+with support-aware Z-MAE checkpoint selection instead of IoU. Test lakes stay
+locked; old profiles/checkpoint-selection defaults are unchanged.
+
 For the fixed-SDF-weight architecture search, use
 [`ARCHITECTURE_SEARCH.md`](ARCHITECTURE_SEARCH.md) and
 `configs/method_arch_v3.json`: 13 one-seed development runs, including five

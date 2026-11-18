@@ -9,6 +9,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from selection import SELECTION_METRICS
+
 
 EXPERIMENTS = {
     "rgb_persistence": ("segmenter_persistence", 0.),
@@ -27,11 +29,13 @@ EXPERIMENTS = {
     "cfc_multiscale_sdf": ("spatial_cfc_multiscale", .1),
     "cfc_multiscale_rate_sdf": ("spatial_cfc_multiscale_rate", .1),
     "cfc_multiscale_lastfine_sdf": ("spatial_cfc_multiscale_lastfine", .1),
+    "cfc_residual_sdf": ("spatial_cfc_residual", .1),
+    "cfc_residual_anchor_sdf": ("spatial_cfc_residual_anchor", .1),
 }
 MAIN_EXPERIMENTS = list(EXPERIMENTS)[:7]
 DEFAULTS = dict(image_size=512, base_channels=16, batch_size=2, context_length=3,
                 max_horizon_days=90., lr=.0003, weight_decay=.0001,
-                lr_schedule="constant", warmup_epochs=0, min_lr_ratio=.01)
+                lr_schedule="constant", warmup_epochs=0, min_lr_ratio=.01, selection_metric="iou")
 
 
 def apply_profile(args: argparse.Namespace) -> None:
@@ -80,6 +84,7 @@ def main() -> None:
     parser.add_argument("--lr-schedule", choices=["constant", "warmup_cosine"])
     parser.add_argument("--warmup-epochs", type=int)
     parser.add_argument("--min-lr-ratio", type=float)
+    parser.add_argument("--selection-metric", choices=SELECTION_METRICS)
     parser.add_argument("--patience", type=int)
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--output-root", type=Path, default=Path(__file__).resolve().parent / "runs")
@@ -89,6 +94,8 @@ def main() -> None:
     args = parser.parse_args()
     explicit_experiments = args.experiments
     apply_profile(args)
+    if args.selection_metric not in SELECTION_METRICS:
+        raise ValueError("Profile contains an unknown checkpoint selection metric")
     test_stage = args.stage in ("final-test", "refit-test")
     refit = args.stage in ("refit", "refit-test")
     if test_stage and not args.confirm_final_test:
@@ -114,10 +121,13 @@ def main() -> None:
                 "lr": args.lr, "weight_decay": args.weight_decay,
                 "lr_schedule": args.lr_schedule, "warmup_epochs": args.warmup_epochs,
                 "min_lr_ratio": args.min_lr_ratio, "no_validation": refit,
+                "selection_metric": args.selection_metric,
                 "training_splits": ["train", "val"] if refit else ["train"],
                 "checkpoint": "last.pt" if refit else "best.pt",
                 "device": args.device, "stage": args.stage,
                 "manifest_sha256": hashlib.sha256((code / "splits.csv").read_bytes()).hexdigest(),
+                "curve_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                 for p in sorted((code / "bang_quy_doi").glob("*.csv"))},
                 "code_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(code.glob("*.py"))}}
     print(json.dumps(settings, indent=2), flush=True)
     commands = []
@@ -135,6 +145,7 @@ def main() -> None:
                          "--lr", str(args.lr), "--weight-decay", str(args.weight_decay),
                          "--lr-schedule", args.lr_schedule, "--warmup-epochs", str(args.warmup_epochs),
                          "--min-lr-ratio", str(args.min_lr_ratio),
+                         "--selection-metric", args.selection_metric,
                          "--num-workers", "0", "--device", args.device, "--output-dir", str(run)]
                 if args.stage == "smoke":
                     train.append("--smoke-test")

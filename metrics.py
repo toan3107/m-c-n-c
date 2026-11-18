@@ -60,7 +60,7 @@ def mean_present(rows: list[dict], key: str) -> float | None:
     return float(np.mean(values)) if values else None
 
 
-def summarize_rows(rows: list[dict]) -> dict:
+def summarize_rows(rows: list[dict], *, strict_z: bool = False) -> dict:
     if not rows:
         raise ValueError("Cannot summarize zero forecast windows")
     by_reservoir = {}
@@ -79,12 +79,29 @@ def summarize_rows(rows: list[dict]) -> dict:
             "z_samples": sum(row["z_abs_error_m"] is not None for row in group),
             "target_out_of_support": sum(row["target_out_of_support"] for row in group),
             "prediction_out_of_support": sum(row["prediction_out_of_support"] for row in group),
+            "level_evaluation": group[0].get("level_evaluation", "primary"),
+            "z_target_samples": sum(not row["target_out_of_support"] for row in group),
+            "z_invalid_predictions": sum(not row["target_out_of_support"] and row["prediction_out_of_support"] for row in group),
         }
     keys = ("iou", "dice", "boundary_f1_20m", "area_mae_km2", "area_rmse_km2", "area_relative_mae", "z_mae_m", "z_rmse_m")
-    return {"samples": len(rows), "per_reservoir": by_reservoir,
+    summary = {"samples": len(rows), "per_reservoir": by_reservoir,
             "macro_reservoir": {key: mean_present(list(by_reservoir.values()), key) for key in keys},
             "z_valid_samples": sum(row["z_abs_error_m"] is not None for row in rows),
             "note": "Z is mask-derived via fixed F-Z, not independently gauge-validated. Z errors require coverage; native IoU/Dice are window means, then reservoir means."}
+    if strict_z:
+        eligible = [item for item in by_reservoir.values()
+                    if item["level_evaluation"] == "primary" and item["z_target_samples"]]
+        total = sum(item["z_target_samples"] for item in eligible)
+        invalid = sum(item["z_invalid_predictions"] for item in eligible)
+        summary["fixed_target_cohort"] = {
+            "target_samples": total, "invalid_predictions": invalid,
+            "coverage": (total - invalid) / total if total else None,
+        }
+        summary["conditional_z_metrics"] = {}
+        for key in ("z_mae_m", "z_rmse_m"):
+            summary["conditional_z_metrics"][key] = summary["macro_reservoir"][key]
+            summary["macro_reservoir"][key] = mean_present(eligible, key) if total and not invalid else None
+    return summary
 
 
 def horizon_bin(days: float) -> str:
